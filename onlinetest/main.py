@@ -54,36 +54,40 @@ class BrowserJob:
     def __init__(self, config):
         self.config = config
         self.driver = None
-        self.screenshot_path = "/tmp/online_hd.png"
         self.full_path = "/tmp/full.png"
+        self.screenshot_path = "/tmp/online_hd.png"
 
     def start(self):
         options = Options()
         options.binary_location = self.config.chrome_binary
 
-        # ===== 核心高清优化 =====
+        # ================== 高清核心配置 ==================
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=2560,1440")
-        options.add_argument("--force-device-scale-factor=2")
+
+        # 🔥 4K viewport（关键提升）
+        options.add_argument("--window-size=3840,2160")
+
+        # 🔥 DPI 3x（提升清晰度核心）
+        options.add_argument("--force-device-scale-factor=3")
         options.add_argument("--high-dpi-support=1")
 
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
 
-        # ===== CDP 强制高清 =====
+        # ================== CDP 强制高清 ==================
         self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
             "width": 1920,
             "height": 1080,
-            "deviceScaleFactor": 2,
+            "deviceScaleFactor": 3,
             "mobile": False
         })
 
         self.driver.get("https://gamebi.moontontech.net/projectmlbb/realtime/online")
 
-        logging.info("浏览器启动成功（高清模式）")
+        logging.info("浏览器启动成功（4K + 3x高清模式）")
 
     def _click(self, by, value, timeout=20):
         el = WebDriverWait(self.driver, timeout).until(
@@ -122,20 +126,19 @@ class BrowserJob:
             )
         )
 
-        # 滚动确保渲染完成
         self.driver.execute_script("arguments[0].scrollIntoView(true);", canvas)
         time.sleep(1)
 
-        # ===== 1. 整页高清截图 =====
+        # ================== 1. 全页高清截图 ==================
         self.driver.save_screenshot(self.full_path)
 
-        # ===== 2. 精确裁剪 canvas =====
         location = canvas.location
         size = canvas.size
 
         img = Image.open(self.full_path)
 
-        scale = 2  # 高清关键参数
+        # ================== 2. 3x 裁剪 ==================
+        scale = 3
 
         left = int(location["x"] * scale)
         top = int(location["y"] * scale)
@@ -143,9 +146,17 @@ class BrowserJob:
         bottom = int((location["y"] + size["height"]) * scale)
 
         img = img.crop((left, top, right, bottom))
-        img.save(self.screenshot_path, quality=100)
 
-        logging.info(f"高清截图完成: {self.screenshot_path}")
+        # ================== 3. 无损优化保存 ==================
+        img = img.resize((img.width, img.height), Image.Resampling.LANCZOS)
+
+        img.save(
+            self.screenshot_path,
+            format="PNG",
+            optimize=True
+        )
+
+        logging.info(f"超清截图完成: {self.screenshot_path}")
 
     def close(self):
         if self.driver:
@@ -187,7 +198,7 @@ class Feishu:
 
         requests.post(self.config.feishu_webhook, json=payload)
 
-        logging.info("飞书发送成功（高清图）")
+        logging.info("飞书发送成功（超清图）")
 
 
 # ================== 重试机制 ==================
