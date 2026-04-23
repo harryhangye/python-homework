@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 
 
-# ================== 配置加载 ==================
+# ================== 配置 ==================
 class Config:
     def __init__(self, env_path="config/online.env"):
         if not os.path.exists(env_path):
@@ -37,7 +37,7 @@ class Config:
 
         self.feishu_app_id = self._get("FEISHU_APP_ID")
         self.feishu_app_secret = self._get("FEISHU_APP_SECRET")
-        self.feishu_webhook = self._get("FEISHU_WEBHOOK")
+        self.feishu_chat_id = self._get("FEISHU_CHAT_ID")
 
         self.chrome_binary = os.getenv("CHROME_BINARY_PATH", "/usr/bin/google-chrome")
 
@@ -59,15 +59,13 @@ class BrowserJob:
         options = Options()
         options.binary_location = self.config.chrome_binary
 
-        # 服务器必须
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--window-size=2560,1440")  # ⭐高清关键
 
         service = Service(ChromeDriverManager().install())
-
         self.driver = webdriver.Chrome(service=service, options=options)
 
         self.driver.get(
@@ -105,7 +103,6 @@ class BrowserJob:
 
     def capture(self):
         self._click(By.XPATH, '//button[contains(.//span, "查询")]')
-
         time.sleep(5)
 
         canvas = WebDriverWait(self.driver, 30).until(
@@ -123,7 +120,7 @@ class BrowserJob:
             self.driver.quit()
 
 
-# ================== 飞书 ==================
+# ================== 飞书（核心修改） ==================
 class Feishu:
     def __init__(self, config):
         self.config = config
@@ -137,31 +134,49 @@ class Feishu:
         res.raise_for_status()
         return res.json()["tenant_access_token"]
 
-    def send_image(self, path):
-        token = self.get_token()
+    # ✅ 上传文件（关键）
+    def upload_file(self, token, path):
+        url = "https://open.feishu.cn/open-apis/im/v1/files"
 
         with open(path, "rb") as f:
             res = requests.post(
-                "https://open.feishu.cn/open-apis/im/v1/images",
+                url,
                 headers={"Authorization": f"Bearer {token}"},
-                files={"image": f},
-                data={"image_type": "message"}
+                files={"file": f},
+                data={"file_type": "stream"}
             )
 
         res.raise_for_status()
-        image_key = res.json()["data"]["image_key"]
+        return res.json()["data"]["file_key"]
+
+    # ✅ 发送文件消息（不会压缩）
+    def send_file(self, file_key):
+        token = self.get_token()
+
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
 
         payload = {
-            "msg_type": "image",
-            "content": {"image_key": image_key}
+            "receive_id": self.config.feishu_chat_id,
+            "msg_type": "file",
+            "content": {
+                "file_key": file_key
+            }
         }
 
-        requests.post(self.config.feishu_webhook, json=payload)
+        res = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            json=payload
+        )
 
-        logging.info("飞书通知发送成功")
+        res.raise_for_status()
+        logging.info("飞书文件消息发送成功（高清无压缩）")
 
 
-# ================== 重试机制 ==================
+# ================== 重试 ==================
 def retry(func, times=3):
     for i in range(1, times + 1):
         try:
@@ -184,7 +199,10 @@ def main():
         browser.start()
         browser.login()
         browser.capture()
-        feishu.send_image(browser.screenshot_path)
+
+        token = feishu.get_token()
+        file_key = feishu.upload_file(token, browser.screenshot_path)
+        feishu.send_file(file_key)
 
     try:
         retry(job)
