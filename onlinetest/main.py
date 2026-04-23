@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import logging
 import requests
 import pyotp
@@ -63,7 +64,7 @@ class BrowserJob:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=2560,1440")  # ⭐高清关键
+        options.add_argument("--window-size=2560,1440")
 
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
@@ -120,7 +121,7 @@ class BrowserJob:
             self.driver.quit()
 
 
-# ================== 飞书（核心修改） ==================
+# ================== 飞书 ==================
 class Feishu:
     def __init__(self, config):
         self.config = config
@@ -134,7 +135,6 @@ class Feishu:
         res.raise_for_status()
         return res.json()["tenant_access_token"]
 
-    # ✅ 上传文件（关键）
     def upload_file(self, token, path):
         url = "https://open.feishu.cn/open-apis/im/v1/files"
 
@@ -147,20 +147,24 @@ class Feishu:
             )
 
         res.raise_for_status()
-        return res.json()["data"]["file_key"]
+        data = res.json()
 
-    # ✅ 发送文件消息（不会压缩）
+        if "file_key" not in data.get("data", {}):
+            raise Exception(f"上传失败: {data}")
+
+        return data["data"]["file_key"]
+
     def send_file(self, file_key):
         token = self.get_token()
 
-        url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+        url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
 
         payload = {
             "receive_id": self.config.feishu_chat_id,
             "msg_type": "file",
-            "content": {
+            "content": json.dumps({
                 "file_key": file_key
-            }
+            })
         }
 
         res = requests.post(
@@ -172,11 +176,19 @@ class Feishu:
             json=payload
         )
 
+        if res.status_code != 200:
+            logging.error(f"飞书错误: {res.text}")
+
         res.raise_for_status()
-        logging.info("飞书文件消息发送成功（高清无压缩）")
+        logging.info("飞书发送成功（高清文件）")
+
+    def send_image(self, path):
+        token = self.get_token()
+        file_key = self.upload_file(token, path)
+        self.send_file(file_key)
 
 
-# ================== 重试 ==================
+# ================== 重试机制 ==================
 def retry(func, times=3):
     for i in range(1, times + 1):
         try:
@@ -199,10 +211,7 @@ def main():
         browser.start()
         browser.login()
         browser.capture()
-
-        token = feishu.get_token()
-        file_key = feishu.upload_file(token, browser.screenshot_path)
-        feishu.send_file(file_key)
+        feishu.send_image(browser.screenshot_path)
 
     try:
         retry(job)
