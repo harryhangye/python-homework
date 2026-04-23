@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import logging
 import requests
 import pyotp
@@ -15,6 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from webdriver_manager.chrome import ChromeDriverManager
+from PIL import Image
 
 
 # ================== 日志 ==================
@@ -38,7 +38,7 @@ class Config:
 
         self.feishu_app_id = self._get("FEISHU_APP_ID")
         self.feishu_app_secret = self._get("FEISHU_APP_SECRET")
-        self.feishu_chat_id = self._get("FEISHU_CHAT_ID")
+        self.feishu_webhook = self._get("FEISHU_WEBHOOK")
 
         self.chrome_binary = os.getenv("CHROME_BINARY_PATH", "/usr/bin/google-chrome")
 
@@ -54,26 +54,36 @@ class BrowserJob:
     def __init__(self, config):
         self.config = config
         self.driver = None
-        self.screenshot_path = "/tmp/online.png"
+        self.screenshot_path = "/tmp/online_hd.png"
+        self.full_path = "/tmp/full.png"
 
     def start(self):
         options = Options()
         options.binary_location = self.config.chrome_binary
 
+        # ===== 核心高清优化 =====
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=2560,1440")
+        options.add_argument("--force-device-scale-factor=2")
+        options.add_argument("--high-dpi-support=1")
 
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
 
-        self.driver.get(
-            "https://gamebi.moontontech.net/projectmlbb/realtime/online"
-        )
+        # ===== CDP 强制高清 =====
+        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+            "width": 1920,
+            "height": 1080,
+            "deviceScaleFactor": 2,
+            "mobile": False
+        })
 
-        logging.info("浏览器启动成功")
+        self.driver.get("https://gamebi.moontontech.net/projectmlbb/realtime/online")
+
+        logging.info("浏览器启动成功（高清模式）")
 
     def _click(self, by, value, timeout=20):
         el = WebDriverWait(self.driver, timeout).until(
@@ -112,9 +122,30 @@ class BrowserJob:
             )
         )
 
-        canvas.screenshot(self.screenshot_path)
+        # 滚动确保渲染完成
+        self.driver.execute_script("arguments[0].scrollIntoView(true);", canvas)
+        time.sleep(1)
 
-        logging.info(f"截图完成: {self.screenshot_path}")
+        # ===== 1. 整页高清截图 =====
+        self.driver.save_screenshot(self.full_path)
+
+        # ===== 2. 精确裁剪 canvas =====
+        location = canvas.location
+        size = canvas.size
+
+        img = Image.open(self.full_path)
+
+        scale = 2  # 高清关键参数
+
+        left = int(location["x"] * scale)
+        top = int(location["y"] * scale)
+        right = int((location["x"] + size["width"]) * scale)
+        bottom = int((location["y"] + size["height"]) * scale)
+
+        img = img.crop((left, top, right, bottom))
+        img.save(self.screenshot_path, quality=100)
+
+        logging.info(f"高清截图完成: {self.screenshot_path}")
 
     def close(self):
         if self.driver:
@@ -135,57 +166,28 @@ class Feishu:
         res.raise_for_status()
         return res.json()["tenant_access_token"]
 
-    def upload_file(self, token, path):
-        url = "https://open.feishu.cn/open-apis/im/v1/files"
+    def send_image(self, path):
+        token = self.get_token()
 
         with open(path, "rb") as f:
             res = requests.post(
-                url,
+                "https://open.feishu.cn/open-apis/im/v1/images",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": f},
-                data={"file_type": "stream"}
+                files={"image": f},
+                data={"image_type": "message"}
             )
 
         res.raise_for_status()
-        data = res.json()
-
-        if "file_key" not in data.get("data", {}):
-            raise Exception(f"上传失败: {data}")
-
-        return data["data"]["file_key"]
-
-    def send_file(self, file_key):
-        token = self.get_token()
-
-        url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+        image_key = res.json()["data"]["image_key"]
 
         payload = {
-            "receive_id": self.config.feishu_chat_id,
-            "msg_type": "file",
-            "content": json.dumps({
-                "file_key": file_key
-            })
+            "msg_type": "image",
+            "content": {"image_key": image_key}
         }
 
-        res = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            },
-            json=payload
-        )
+        requests.post(self.config.feishu_webhook, json=payload)
 
-        if res.status_code != 200:
-            logging.error(f"飞书错误: {res.text}")
-
-        res.raise_for_status()
-        logging.info("飞书发送成功（高清文件）")
-
-    def send_image(self, path):
-        token = self.get_token()
-        file_key = self.upload_file(token, path)
-        self.send_file(file_key)
+        logging.info("飞书发送成功（高清图）")
 
 
 # ================== 重试机制 ==================
