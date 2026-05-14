@@ -87,9 +87,16 @@ class BrowserJob:
         # 🔥 DPI 3x（提升清晰度核心）
         options.add_argument("--force-device-scale-factor=3")
         options.add_argument("--high-dpi-support=1")
+        
+        # 新增禁用 D-Bus 相关参数
+        options.add_argument("--disable-dbus")
+        options.add_argument("--disable-machine-id")
+        options.add_argument("--disable-remote-display")
+        options.add_argument("--disable-setuid-sandbox")
 
         # Chrome 用户数据目录定向到当前用户可写位置, 避免默认 ~/.config/google-chrome/ 权限问题
         options.add_argument(f"--user-data-dir={self.PROFILE_DIR}")
+        
 
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
