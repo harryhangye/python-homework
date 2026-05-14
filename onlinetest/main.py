@@ -153,18 +153,29 @@ class BrowserJob:
         el.send_keys(text)
 
     def login(self):
-        # 等 SPA 首屏加载完: 任意 .tab-item 出现 = Vue 组件已挂载
-        # 给 60s 余量, 避免内网首次请求慢
+        # 等待: 出现登录页 (.tab-item) 或已经登录后的 dashboard ([id*='__qiankun_microapp'])
+        # 内网若 SSO/证书自动鉴权会直接跳到 dashboard, 这种情况整个登录步骤跳过
+        DASHBOARD = (By.CSS_SELECTOR, "[id*='__qiankun_microapp']")
+        LOGIN_TAB = (By.CSS_SELECTOR, ".tab-item")
         try:
             WebDriverWait(self.driver, 60).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".tab-item"))
+                EC.any_of(
+                    EC.presence_of_element_located(DASHBOARD),
+                    EC.presence_of_element_located(LOGIN_TAB),
+                )
             )
         except Exception:
-            logging.error("登录页 60s 内未渲染出 .tab-item")
+            logging.error("60s 内既未渲染登录页也没渲染 dashboard")
             self._dump_state("login_init")
             raise
-        time.sleep(1)  # 让 Vue 完成首次重绘
 
+        # 已登录 -> 直接返回
+        if self.driver.find_elements(*DASHBOARD):
+            logging.info("已检测到登录态(dashboard 已挂载), 跳过登录步骤")
+            return
+
+        # 走登录流程
+        time.sleep(1)  # 让 Vue 完成首次重绘
         self._click(By.CSS_SELECTOR, ".tab-item:nth-child(2)")
         self._input(By.CSS_SELECTOR, ".el-form-item:nth-child(1) .el-input__inner", self.config.email)
         self._input(By.CSS_SELECTOR, ".el-form-item:nth-child(2) .el-input__inner", self.config.password)
@@ -173,7 +184,6 @@ class BrowserJob:
         code = pyotp.TOTP(self.config.mfa_secret).now()
         self._input(By.CLASS_NAME, "mfa-code", code)
         self._click(By.CLASS_NAME, "mfa-submit")
-
         logging.info("登录完成")
 
     def capture(self):
