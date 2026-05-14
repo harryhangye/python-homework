@@ -15,6 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.driver_cache import DriverCacheManager
 from PIL import Image
 
 
@@ -64,10 +65,6 @@ class BrowserJob:
         for d in (self.TMP_DIR, self.WDM_DIR, self.PROFILE_DIR):
             d.mkdir(parents=True, exist_ok=True)
 
-        # 让 webdriver_manager 把驱动缓存到当前用户的目录, 而不是 ~/.wdm/
-        # (env var 必须在 ChromeDriverManager() 被实例化前设置)
-        os.environ.setdefault("WDM_CACHE_PATH", str(self.WDM_DIR))
-
         self.full_path = str(self.TMP_DIR / "full.png")
         self.screenshot_path = str(self.TMP_DIR / "online_hd.png")
 
@@ -87,18 +84,19 @@ class BrowserJob:
         # 🔥 DPI 3x（提升清晰度核心）
         options.add_argument("--force-device-scale-factor=3")
         options.add_argument("--high-dpi-support=1")
-        
-        # 新增禁用 D-Bus 相关参数
-        options.add_argument("--disable-dbus")
-        options.add_argument("--disable-machine-id")
-        options.add_argument("--disable-remote-display")
+
+        # 仅保留有效的非 root 沙箱参数
+        # (--disable-dbus / --disable-machine-id / --disable-remote-display 不是真实的 Chrome flag)
         options.add_argument("--disable-setuid-sandbox")
 
         # Chrome 用户数据目录定向到当前用户可写位置, 避免默认 ~/.config/google-chrome/ 权限问题
         options.add_argument(f"--user-data-dir={self.PROFILE_DIR}")
-        
 
-        service = Service(ChromeDriverManager().install())
+
+        # webdriver-manager 4.x 的方式: 通过 cache_manager 把驱动缓存指向自定义目录
+        # (旧版 WDM_CACHE_PATH 环境变量在 4.x 已失效)
+        cache_mgr = DriverCacheManager(root_dir=str(self.WDM_DIR))
+        service = Service(ChromeDriverManager(cache_manager=cache_mgr).install())
         self.driver = webdriver.Chrome(service=service, options=options)
 
         # ================== CDP 强制高清 ==================
@@ -113,22 +111,60 @@ class BrowserJob:
 
         logging.info("浏览器启动成功（4K + 3x高清模式）")
 
+    def _dump_state(self, label="error"):
+        """出错时dump screenshot + HTML + URL, 用于离线排查"""
+        try:
+            ts = int(time.time())
+            png = self.TMP_DIR / f"debug_{label}_{ts}.png"
+            html = self.TMP_DIR / f"debug_{label}_{ts}.html"
+            self.driver.save_screenshot(str(png))
+            with open(html, "w", encoding="utf-8") as f:
+                f.write(self.driver.page_source)
+            logging.error(f"[DEBUG] URL={self.driver.current_url}")
+            logging.error(f"[DEBUG] Title={self.driver.title}")
+            logging.error(f"[DEBUG] Screenshot: {png}")
+            logging.error(f"[DEBUG] HTML dump:  {html}")
+        except Exception as e:
+            logging.error(f"[DEBUG] dump 失败: {e}")
+
     def _click(self, by, value, timeout=20):
-        el = WebDriverWait(self.driver, timeout).until(
-            EC.element_to_be_clickable((by, value))
-        )
+        try:
+            el = WebDriverWait(self.driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+        except Exception:
+            logging.error(f"_click 超时: ({by}, {value})")
+            self._dump_state(f"click_{value[:30]}")
+            raise
         self.driver.execute_script("arguments[0].scrollIntoView(true);", el)
         time.sleep(0.3)
         el.click()
 
     def _input(self, by, value, text, timeout=20):
-        el = WebDriverWait(self.driver, timeout).until(
-            EC.presence_of_element_located((by, value))
-        )
+        try:
+            el = WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+        except Exception:
+            logging.error(f"_input 超时: ({by}, {value})")
+            self._dump_state(f"input_{value[:30]}")
+            raise
         el.clear()
         el.send_keys(text)
 
     def login(self):
+        # 等 SPA 首屏加载完: 任意 .tab-item 出现 = Vue 组件已挂载
+        # 给 60s 余量, 避免内网首次请求慢
+        try:
+            WebDriverWait(self.driver, 60).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".tab-item"))
+            )
+        except Exception:
+            logging.error("登录页 60s 内未渲染出 .tab-item")
+            self._dump_state("login_init")
+            raise
+        time.sleep(1)  # 让 Vue 完成首次重绘
+
         self._click(By.CSS_SELECTOR, ".tab-item:nth-child(2)")
         self._input(By.CSS_SELECTOR, ".el-form-item:nth-child(1) .el-input__inner", self.config.email)
         self._input(By.CSS_SELECTOR, ".el-form-item:nth-child(2) .el-input__inner", self.config.password)
