@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 import pyotp
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -51,11 +52,24 @@ class Config:
 
 # ================== 浏览器 ==================
 class BrowserJob:
+    # 临时文件根目录: 优先 ONLINETEST_TMP_DIR 环境变量, 否则放到当前用户 ~/.cache/onlinetest/
+    # 避免和 root 之前留下的 /tmp/*.png 冲突 (root 拥有的文件 non-root 无权覆盖)
+    TMP_DIR = Path(os.environ.get("ONLINETEST_TMP_DIR", Path.home() / ".cache" / "onlinetest"))
+    WDM_DIR = TMP_DIR / "wdm"             # webdriver_manager 缓存
+    PROFILE_DIR = TMP_DIR / "chrome-profile"  # Chrome 用户数据目录
+
     def __init__(self, config):
         self.config = config
         self.driver = None
-        self.full_path = "/tmp/full.png"
-        self.screenshot_path = "/tmp/online_hd.png"
+        for d in (self.TMP_DIR, self.WDM_DIR, self.PROFILE_DIR):
+            d.mkdir(parents=True, exist_ok=True)
+
+        # 让 webdriver_manager 把驱动缓存到当前用户的目录, 而不是 ~/.wdm/
+        # (env var 必须在 ChromeDriverManager() 被实例化前设置)
+        os.environ.setdefault("WDM_CACHE_PATH", str(self.WDM_DIR))
+
+        self.full_path = str(self.TMP_DIR / "full.png")
+        self.screenshot_path = str(self.TMP_DIR / "online_hd.png")
 
     def start(self):
         options = Options()
@@ -73,6 +87,9 @@ class BrowserJob:
         # 🔥 DPI 3x（提升清晰度核心）
         options.add_argument("--force-device-scale-factor=3")
         options.add_argument("--high-dpi-support=1")
+
+        # Chrome 用户数据目录定向到当前用户可写位置, 避免默认 ~/.config/google-chrome/ 权限问题
+        options.add_argument(f"--user-data-dir={self.PROFILE_DIR}")
 
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
