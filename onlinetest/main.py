@@ -194,6 +194,9 @@ class BrowserJob:
         # 登录完成后图表数据仍需时间加载, 固定等待 1 分钟避免截到 loading 状态
         time.sleep(60)
 
+        # 先清掉旧截图, 避免截图一旦失败, 旧文件被误当成本次结果发送出去
+        Path(self.screenshot_path).unlink(missing_ok=True)
+
         panel = WebDriverWait(self.driver, 30).until(
             EC.presence_of_element_located((By.ID, "monitor-chart-rtm_inc_online"))
         )
@@ -280,6 +283,8 @@ def main():
         browser.login()
         browser.capture()
         feishu.send_image(browser.screenshot_path)
+        # 发送成功后删除截图, 防止残留文件被下一次运行误发
+        Path(browser.screenshot_path).unlink(missing_ok=True)
 
     try:
         retry(job)
