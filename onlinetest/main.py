@@ -187,6 +187,9 @@ class BrowserJob:
         logging.info("登录完成")
 
     def capture(self):
+        # 登录完成后图表数据仍需时间加载, 固定等待 1 分钟避免截到 loading 状态
+        time.sleep(60)
+
         panel = WebDriverWait(self.driver, 30).until(
             EC.presence_of_element_located((By.ID, "monitor-chart-rtm_inc_online"))
         )
