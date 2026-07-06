@@ -106,6 +106,10 @@ class BrowserJob:
             "mobile": False
         })
 
+        # Profile 目录跨次运行复用(为了保留登录态跳过重复登录), 但这会让 Chrome 磁盘缓存也一起持久化,
+        # 导致图表数据接口可能命中旧的缓存响应而非拿到最新数据。禁用 HTTP 缓存不影响 cookie/登录态。
+        self.driver.execute_cdp_cmd("Network.setCacheDisabled", {"cacheDisabled": True})
+
         self.driver.get("https://decismart.bi.moontontech.net/mlbb_real_time/monitor")
 
         logging.info("浏览器启动成功（4K + 3x高清模式）")
