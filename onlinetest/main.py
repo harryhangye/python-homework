@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 import requests
@@ -16,7 +17,6 @@ from selenium.webdriver.support import expected_conditions as EC
 
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.driver_cache import DriverCacheManager
-from PIL import Image
 
 
 # ================== 日志 ==================
@@ -65,7 +65,6 @@ class BrowserJob:
         for d in (self.TMP_DIR, self.WDM_DIR, self.PROFILE_DIR):
             d.mkdir(parents=True, exist_ok=True)
 
-        self.full_path = str(self.TMP_DIR / "full.png")
         self.screenshot_path = str(self.TMP_DIR / "online_hd.png")
 
     def start(self):
@@ -107,7 +106,7 @@ class BrowserJob:
             "mobile": False
         })
 
-        self.driver.get("https://gamebi.moontontech.net/projectmlbb/realtime/online")
+        self.driver.get("https://decismart.bi.moontontech.net/mlbb_real_time/monitor")
 
         logging.info("浏览器启动成功（4K + 3x高清模式）")
 
@@ -115,8 +114,9 @@ class BrowserJob:
         """出错时dump screenshot + HTML + URL, 用于离线排查"""
         try:
             ts = int(time.time())
-            png = self.TMP_DIR / f"debug_{label}_{ts}.png"
-            html = self.TMP_DIR / f"debug_{label}_{ts}.html"
+            safe_label = re.sub(r"[^A-Za-z0-9_-]", "_", label)
+            png = self.TMP_DIR / f"debug_{safe_label}_{ts}.png"
+            html = self.TMP_DIR / f"debug_{safe_label}_{ts}.html"
             self.driver.save_screenshot(str(png))
             with open(html, "w", encoding="utf-8") as f:
                 f.write(self.driver.page_source)
@@ -153,9 +153,9 @@ class BrowserJob:
         el.send_keys(text)
 
     def login(self):
-        # 等待: 出现登录页 (.tab-item) 或已经登录后的 dashboard ([id*='__qiankun_microapp'])
+        # 等待: 出现登录页 (.tab-item) 或已经登录后的 dashboard ("实时在线"图表卡片已挂载)
         # 内网若 SSO/证书自动鉴权会直接跳到 dashboard, 这种情况整个登录步骤跳过
-        DASHBOARD = (By.CSS_SELECTOR, "[id*='__qiankun_microapp']")
+        DASHBOARD = (By.ID, "monitor-chart-rtm_inc_online")
         LOGIN_TAB = (By.CSS_SELECTOR, ".tab-item")
         try:
             WebDriverWait(self.driver, 60).until(
@@ -187,44 +187,22 @@ class BrowserJob:
         logging.info("登录完成")
 
     def capture(self):
-        self._click(By.XPATH, '//button[contains(.//span, "查询")]')
-        time.sleep(5)
-
-        canvas = WebDriverWait(self.driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, '//div[contains(@id, "__qiankun_microapp")]//canvas')
-            )
+        panel = WebDriverWait(self.driver, 30).until(
+            EC.presence_of_element_located((By.ID, "monitor-chart-rtm_inc_online"))
         )
+        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", panel)
 
-        self.driver.execute_script("arguments[0].scrollIntoView(true);", canvas)
-        time.sleep(1)
-
-        # ================== 1. 全页高清截图 ==================
-        self.driver.save_screenshot(self.full_path)
-
-        location = canvas.location
-        size = canvas.size
-
-        img = Image.open(self.full_path)
-
-        # ================== 2. 3x 裁剪 ==================
-        scale = 3
-
-        left = int(location["x"] * scale)
-        top = int(location["y"] * scale)
-        right = int((location["x"] + size["width"]) * scale)
-        bottom = int((location["y"] + size["height"]) * scale)
-
-        img = img.crop((left, top, right, bottom))
-
-        # ================== 3. 无损优化保存 ==================
-        img = img.resize((img.width, img.height), Image.Resampling.LANCZOS)
-
-        img.save(
-            self.screenshot_path,
-            format="PNG",
-            optimize=True
+        WebDriverWait(self.driver, 30).until(
+            lambda d: panel.find_elements(By.TAG_NAME, "canvas")
         )
+        # 等待图表自身的加载动画消失, 确保数据渲染完成
+        WebDriverWait(self.driver, 30).until(
+            lambda d: not panel.find_elements(By.CSS_SELECTOR, ".ant-spin-spinning")
+        )
+        time.sleep(2)
+
+        chart = panel.find_element(By.XPATH, './/div[contains(@class, "chart-container")]')
+        chart.screenshot(self.screenshot_path)
 
         logging.info(f"超清截图完成: {self.screenshot_path}")
 
